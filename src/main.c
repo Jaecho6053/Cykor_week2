@@ -150,11 +150,10 @@ int execute_command(char* cmdLine) {
     char* options[MAX_ARGS];
     int background = 0;
 
-    // 백그라운드 실행 확인
     char* amp = strchr(cmdLine, '&');
     if (amp) {
         background = 1;
-        *amp = '\0'; // '&' 제거
+        *amp = '\0';
     }
 
     inputParser(cmdLine, options);
