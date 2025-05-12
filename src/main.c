@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <sys/wait.h>
 
 #define MAX_LINE 4096
 #define MAX_ARGS 64
@@ -11,10 +12,10 @@
 void printUser(void);
 void inputParser(char* cmdLine, char** options);
 void pipelineFunc(char* cmdline);
+int execute_command(char* cmdLine);
 
 int main(void) {
     char cmdLine[MAX_LINE];
-    char* options[MAX_ARGS];
 
     while (1) {
         printUser();
@@ -24,65 +25,41 @@ int main(void) {
         }
 
         cmdLine[strcspn(cmdLine, "\n")] = '\0';
-        
+
         if (strchr(cmdLine, '|') != NULL) {
             pipelineFunc(cmdLine);
             continue;
         }
 
-        inputParser(cmdLine, options);
-        
         if (strlen(cmdLine) == 0) continue;
-        if (options[0] == NULL) continue;
 
-        
-        if (strcmp(options[0], "exit") == 0) {
-            break;
-        }
+        char* rest = cmdLine;
+        char* token;
+        int last_status = 0;
+        char* op = NULL;
 
-        
-        if (strcmp(options[0], "cd") == 0) {
-            const char* target = options[1];
+        while ((token = strsep(&rest, ";&|")) != NULL) {
+            while (*token == ' ') token++; // 앞 공백 제거
+            if (strlen(token) == 0) continue;
 
-            if (target == NULL) {
-                target = getenv("HOME");
-            } else if (strcmp(target, "~") == 0) {
-                target = getenv("HOME");
+            int run = 1;
+            if (op) {
+                if (strcmp(op, "&&") == 0 && last_status != 0) run = 0;
+                if (strcmp(op, "||") == 0 && last_status == 0) run = 0;
             }
 
-            if (target && chdir(target) != 0) {
-                printf("Failed to move directory");
+            if (run) {
+                last_status = execute_command(token);
             }
 
-            continue;
-        }
-        
-        if (strcmp(options[0], "pwd") == 0) {
-            char pwd[PATH_MAX];
-            if (getcwd(pwd, sizeof(pwd)) != NULL) {
-                printf("%s\n", pwd);
-            } else {
-                printf("Failed to load location of current directory");
+            if (rest) {
+                op = rest;
+                if (strncmp(op, "&&", 2) == 0 || strncmp(op, "||", 2) == 0) {
+                    rest += 2;
+                } else {
+                    rest += 1;
+                }
             }
-            continue;
-        }
-        
-        if (strchr(cmdLine, '|') != NULL) {
-            pipelineFunc(cmdLine);
-            continue;
-        }
-
-
-        pid_t pid = fork();
-        if (pid < 0) {
-            printf("Cannot execute fork");
-            continue;
-        } else if (pid == 0) {
-            execvp(options[0], options);
-            printf("Cannot execute execvp");
-            exit(1);
-        } else {
-            wait(NULL);
         }
     }
 
@@ -153,7 +130,6 @@ void pipelineFunc(char* cmdLine) {
             exit(1);
         }
 
-        
         if (i > 0) {
             close(prev_pipe[0]);
             close(prev_pipe[1]);
@@ -169,4 +145,45 @@ void pipelineFunc(char* cmdLine) {
         wait(NULL);
     }
 }
- 
+
+int execute_command(char* cmdLine) {
+    char* options[MAX_ARGS];
+    int background = 0;
+
+    // 백그라운드 실행 확인
+    char* amp = strchr(cmdLine, '&');
+    if (amp) {
+        background = 1;
+        *amp = '\0'; // '&' 제거
+    }
+
+    inputParser(cmdLine, options);
+    if (options[0] == NULL) return 0;
+
+    // 내장 명령어 처리
+    if (strcmp(options[0], "cd") == 0) {
+        const char* target = options[1];
+        if (target == NULL || strcmp(target, "~") == 0) target = getenv("HOME");
+        if (target && chdir(target) != 0) printf("Cannot execute cd");
+        return 0;
+    }
+    if (strcmp(options[0], "pwd") == 0) {
+        char pwd[PATH_MAX];
+        if (getcwd(pwd, sizeof(pwd)) != NULL) printf("%s\n", pwd);
+        else printf("Cannot execute pwd");
+        return 0;
+    }
+    if (strcmp(options[0], "exit") == 0) exit(0);
+
+    // 외부 명령 실행
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp(options[0], options);
+        printf("Cannot execute execvp");
+        exit(1);
+    } else {
+        if (!background) waitpid(pid, NULL, 0);
+        else printf("[BG PID %d started]\n", pid);
+        return 0;
+    }
+}
